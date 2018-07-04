@@ -11,8 +11,8 @@ $ docker run -p 5000:5000 -it peer-aware-groupcache
 
 ```
 $ docker build -t peer-aware-groupcache .
-$ docker tag peer-aware-groupcache robwil/peer-aware-groupcache:1.0.1
-$ docker push robwil/peer-aware-groupcache:1.0.1
+$ docker tag peer-aware-groupcache robwil/peer-aware-groupcache:1.0.6
+$ docker push robwil/peer-aware-groupcache:1.0.6
 ```
 
 ## Helm

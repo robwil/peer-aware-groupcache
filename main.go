@@ -6,6 +6,10 @@ import (
     "strconv"
     "github.com/golang/groupcache"
     "net/http"
+    "k8s.io/client-go/kubernetes"
+    metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+    "k8s.io/api/core/v1"
+    "k8s.io/client-go/rest"
 )
 
 const Port = 5000
@@ -65,14 +69,77 @@ func Factors(w http.ResponseWriter, r *http.Request) {
     log.Printf("GET %s", r.RequestURI)
 }
 
+func MonitorPodState(clientset *kubernetes.Clientset, pool *groupcache.HTTPPool) {
+    // When a kube pod is ADDED or DELETED, it goes through several changes which issue MODIFIED events.
+    // By watching these MODIFIED events for times when we see a given podIp associated with a Pod READY condition
+    // set to true or false, we can keep track of all pods which are ready to receive connections. This stream of
+    // events is used to maintain an always-updated list of peers for groupcache.
+
+    // TODO: add some filtering here to only peer-aware-groupcache pods
+    watchInterface, err := clientset.CoreV1().Pods("default").Watch(metav1.ListOptions{})
+    if err != nil {
+        log.Printf("WARNING: error watching pods: %v", err)
+        return
+    }
+    ch := watchInterface.ResultChan()
+    log.Printf("Started waiting on result channel...")
+    for event := range ch {
+
+        pod, ok := event.Object.(*v1.Pod)
+        if !ok {
+            log.Printf("WARNING: got non-pod object from pod watching: %v", event.Object)
+        }
+        // TODO: listen to all events where podIp is present
+        // If podReady = false, remove that IP from peer list
+        // If podReady = true, add that IP to peer list
+        podName := pod.Name
+        podIp := pod.Status.PodIP
+        podReady := false
+        for _, condition := range pod.Status.Conditions {
+            if condition.Type == v1.PodReady && condition.Status == v1.ConditionTrue {
+                podReady = true
+            }
+        }
+        switch event.Type {
+        case "ADDED":
+            log.Printf("ADDED pod %s with ip %s. Ready = %v", podName, podIp, podReady)
+        case "MODIFIED":
+            log.Printf("MODIFIED pod %s with ip %s. Ready = %v", podName, podIp, podReady)
+        case "DELETED":
+            log.Printf("DELETED pod %s with ip %s. Ready = %v", podName, podIp, podReady)
+        }
+    }
+}
+
 func main() {
+    // TODO: refactor this peer awareness as a library, and setup this groupcache app as a sample app for how to use it.
+    // API could be something like:
+    //    peerAwareness(filterFunc, updateFunc)
+    // where filterFunc(*v1.Pod) bool - defines how to filter pod events
+    // where updateFunc(podIp string, pod *v1.Pod, status PeerStatus) error - will be called as a goroutine whenever there is a change to the peer list
+    // where PeerStatus = Added or Removed
+
     // Setup groupcache (will automatically inject handler into net/http)
     me := fmt.Sprintf("0.0.0.0:%d", Port)
+
+    // TODO: kube api call to get initial list of peers.
     pool := groupcache.NewHTTPPool("http://" + me)
     pool.Set(me)
-    // Whenever peers change:
-    //peers.Set("http://10.0.0.1", "http://10.0.0.2", "http://10.0.0.3")
 
+    // Setup Kube api connection, if within Kube cluster
+    config, err := rest.InClusterConfig()
+    if err == nil {
+        clientset, err := kubernetes.NewForConfig(config)
+        if err != nil {
+            log.Fatalf("Could not connect to Kubernetes API: %v", err)
+        }
+        // Start monitoring for pod transitions
+        go MonitorPodState(clientset, pool)
+    } else {
+        log.Printf("WARNING: unable to create InCluster config for Kubernetes API. Is this running within a Kube cluster??")
+    }
+
+    // Setup http routes
     http.HandleFunc("/", Index)
     http.HandleFunc("/factors", Factors)
 
