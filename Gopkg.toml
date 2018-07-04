@@ -25,14 +25,6 @@
 #   unused-packages = true
 
 
-[[constraint]]
-  branch = "master"
-  name = "github.com/qiangxue/fasthttp-routing"
-
-[[constraint]]
-  name = "github.com/valyala/fasthttp"
-  version = "20180529.0.0"
-
 [prune]
   go-tests = true
   unused-packages = true

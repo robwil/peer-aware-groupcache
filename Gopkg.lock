@@ -2,46 +2,26 @@
 
 
 [[projects]]
-  name = "github.com/klauspost/compress"
-  packages = [
-    "flate",
-    "gzip",
-    "zlib"
-  ]
-  revision = "5fb1f31b0a61e9858f12f39266e059848a5f1cea"
-  version = "v1.3.0"
-
-[[projects]]
-  name = "github.com/klauspost/cpuid"
-  packages = ["."]
-  revision = "ae7887de9fa5d2db4eaa8174a7eff2c1ac00f2da"
-  version = "v1.1"
-
-[[projects]]
   branch = "master"
-  name = "github.com/qiangxue/fasthttp-routing"
-  packages = ["."]
-  revision = "6ccdc2a18d8712f842de50ddcb8c9a3d025ddc71"
-
-[[projects]]
-  branch = "master"
-  name = "github.com/valyala/bytebufferpool"
-  packages = ["."]
-  revision = "e746df99fe4a3986f4d4f79e13c1e0117ce9c2f7"
-
-[[projects]]
-  name = "github.com/valyala/fasthttp"
+  name = "github.com/golang/groupcache"
   packages = [
     ".",
-    "fasthttputil",
-    "stackless"
+    "consistenthash",
+    "groupcachepb",
+    "lru",
+    "singleflight"
   ]
-  revision = "e5f51c11919d4f66400334047b897ef0a94c6f3c"
-  version = "v20180529"
+  revision = "24b0969c4cb722950103eed87108c8d291a8df00"
+
+[[projects]]
+  name = "github.com/golang/protobuf"
+  packages = ["proto"]
+  revision = "b4deda0973fb4c70b50d226b1af49f3da59f5265"
+  version = "v1.1.0"
 
 [solve-meta]
   analyzer-name = "dep"
   analyzer-version = 1
-  inputs-digest = "b8359baa1c1c8ffb495a0318dd973c5888fe64170d3e0dff63e0ddb2490df0ab"
+  inputs-digest = "a1e031c0c726f5f9673df3c99e870784caf6781c11a17d0d10731917563dde1a"
   solver-name = "gps-cdcl"
   solver-version = 1

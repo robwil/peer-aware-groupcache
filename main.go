@@ -3,9 +3,9 @@ package main
 import (
     "fmt"
     "log"
-    "github.com/valyala/fasthttp"
-    "github.com/qiangxue/fasthttp-routing"
     "strconv"
+    "github.com/golang/groupcache"
+    "net/http"
 )
 
 const Port = 5000
@@ -38,32 +38,46 @@ func PrimeFactors(n int64) (pfs []int64) {
     return
 }
 
-func Index(ctx *routing.Context) error {
-    log.Printf("GET /")
-    fmt.Fprintf(ctx, "Hello world\n")
-    return nil
-}
-
-func Factors(ctx *routing.Context) error {
-    log.Printf("GET %s", ctx.RequestURI())
-    nStr := ctx.Param("n")
-    n, err := strconv.ParseInt(nStr, 10, 64)
+var PrimeFactorsGroup = groupcache.NewGroup("primeFactors", 1 << 20, groupcache.GetterFunc(func(ctx groupcache.Context, key string, dest groupcache.Sink) error {
+    log.Printf("Calculating prime factors for %s", key)
+    n, err := strconv.ParseInt(key, 10, 64)
     if err != nil {
         return err
     }
     pfs := PrimeFactors(n)
-    fmt.Fprintf(ctx, "%v\n", pfs)
+    dest.SetString(fmt.Sprintf("%v", pfs))
     return nil
+}))
+
+func Index(w http.ResponseWriter, _ *http.Request) {
+    fmt.Fprintf(w, "Hello world\n")
+    log.Printf("GET /")
+}
+
+func Factors(w http.ResponseWriter, r *http.Request) {
+    nStr := r.FormValue("n")
+    var b []byte
+    if err := PrimeFactorsGroup.Get(nil, nStr, groupcache.AllocatingByteSliceSink(&b)); err != nil {
+        http.Error(w, err.Error(), http.StatusInternalServerError)
+        return
+    }
+    fmt.Fprintf(w, "%s\n", b)
+    log.Printf("GET %s", r.RequestURI)
 }
 
 func main() {
-    // Setup http routes
-    router := routing.New()
-    router.Get("/", Index)
-    router.Get("/factors/<n>", Factors)
+    // Setup groupcache (will automatically inject handler into net/http)
+    me := fmt.Sprintf("0.0.0.0:%d", Port)
+    pool := groupcache.NewHTTPPool("http://" + me)
+    pool.Set(me)
+    // Whenever peers change:
+    //peers.Set("http://10.0.0.1", "http://10.0.0.2", "http://10.0.0.3")
+
+    http.HandleFunc("/", Index)
+    http.HandleFunc("/factors", Factors)
 
     log.Printf("Listening on port %d...", Port)
-    if err := fasthttp.ListenAndServe(fmt.Sprintf("0.0.0.0:%d", Port), router.HandleRequest); err != nil {
+    if err := http.ListenAndServe(me, nil); err != nil {
         log.Fatalf("error in ListenAndServe: %s", err)
     }
 }
