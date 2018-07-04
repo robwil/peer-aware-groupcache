@@ -10,6 +10,7 @@ import (
     metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
     "k8s.io/api/core/v1"
     "k8s.io/client-go/rest"
+    "os"
 )
 
 const Port = 5000
@@ -55,7 +56,6 @@ var PrimeFactorsGroup = groupcache.NewGroup("primeFactors", 1 << 20, groupcache.
 
 func Index(w http.ResponseWriter, _ *http.Request) {
     fmt.Fprintf(w, "Hello world\n")
-    log.Printf("GET /")
 }
 
 func Factors(w http.ResponseWriter, r *http.Request) {
@@ -66,40 +66,83 @@ func Factors(w http.ResponseWriter, r *http.Request) {
         return
     }
     fmt.Fprintf(w, "%s\n", b)
-    log.Printf("GET %s", r.RequestURI)
 }
 
-func MonitorPodState(clientset *kubernetes.Clientset, pool *groupcache.HTTPPool) {
+func Stats(w http.ResponseWriter, _ *http.Request) {
+    stats := PrimeFactorsGroup.CacheStats(groupcache.MainCache)
+    fmt.Fprintln(w, "Bytes:    ", stats.Bytes)
+    fmt.Fprintln(w, "Items:    ", stats.Items)
+    fmt.Fprintln(w, "Gets:     ", stats.Gets)
+    fmt.Fprintln(w, "Hits:     ", stats.Hits)
+    fmt.Fprintln(w, "Evictions:", stats.Evictions)
+}
+
+func HotStats(w http.ResponseWriter, _ *http.Request) {
+    stats := PrimeFactorsGroup.CacheStats(groupcache.HotCache)
+    fmt.Fprintln(w, "Bytes:    ", stats.Bytes)
+    fmt.Fprintln(w, "Items:    ", stats.Items)
+    fmt.Fprintln(w, "Gets:     ", stats.Gets)
+    fmt.Fprintln(w, "Hits:     ", stats.Hits)
+    fmt.Fprintln(w, "Evictions:", stats.Evictions)
+}
+
+type PodSet map[string]bool
+func (podSet PodSet) Keys() []string {
+    keys := make([]string, len(podSet))
+    i := 0
+    for key := range podSet {
+        keys[i] = key
+        i++
+    }
+    return keys
+}
+func (podSet PodSet) String() string {
+    return fmt.Sprintf("%v", podSet.Keys())
+}
+
+func GetInitialPods(clientset *kubernetes.Clientset, listOptions metav1.ListOptions, myIp string) (PodSet, error) {
+    pods, err := clientset.CoreV1().Pods("default").List(listOptions)
+    if err != nil {
+        return nil, err
+    }
+    podSet := make(PodSet)
+    podSet[getPodUrl(myIp)] = true
+    for _, pod := range pods.Items {
+        podIp := pod.Status.PodIP
+        if isPodReady(&pod) && podIp != myIp {
+            podSet[getPodUrl(podIp)] = true
+        }
+    }
+    return podSet, nil
+}
+
+func MonitorPodState(clientset *kubernetes.Clientset, listOptions metav1.ListOptions, pool *groupcache.HTTPPool, myIp string, initialPods PodSet) {
     // When a kube pod is ADDED or DELETED, it goes through several changes which issue MODIFIED events.
     // By watching these MODIFIED events for times when we see a given podIp associated with a Pod READY condition
-    // set to true or false, we can keep track of all pods which are ready to receive connections. This stream of
+    // set to true or false, we can keep track of all podUrls which are ready to receive connections. This stream of
     // events is used to maintain an always-updated list of peers for groupcache.
 
-    // TODO: add some filtering here to only peer-aware-groupcache pods
-    watchInterface, err := clientset.CoreV1().Pods("default").Watch(metav1.ListOptions{})
+    podSet := initialPods
+    log.Printf("Initial pod list = %v", podSet)
+
+    // begin watch API call
+    watchInterface, err := clientset.CoreV1().Pods("default").Watch(listOptions)
     if err != nil {
         log.Printf("WARNING: error watching pods: %v", err)
         return
     }
     ch := watchInterface.ResultChan()
-    log.Printf("Started waiting on result channel...")
     for event := range ch {
-
         pod, ok := event.Object.(*v1.Pod)
         if !ok {
             log.Printf("WARNING: got non-pod object from pod watching: %v", event.Object)
+            continue
         }
-        // TODO: listen to all events where podIp is present
-        // If podReady = false, remove that IP from peer list
-        // If podReady = true, add that IP to peer list
         podName := pod.Name
         podIp := pod.Status.PodIP
-        podReady := false
-        for _, condition := range pod.Status.Conditions {
-            if condition.Type == v1.PodReady && condition.Status == v1.ConditionTrue {
-                podReady = true
-            }
-        }
+        podReady := isPodReady(pod)
+
+        // Debug info
         switch event.Type {
         case "ADDED":
             log.Printf("ADDED pod %s with ip %s. Ready = %v", podName, podIp, podReady)
@@ -108,43 +151,95 @@ func MonitorPodState(clientset *kubernetes.Clientset, pool *groupcache.HTTPPool)
         case "DELETED":
             log.Printf("DELETED pod %s with ip %s. Ready = %v", podName, podIp, podReady)
         }
+
+        // TODO: detect if new set is diff than original set? to dedupe the logging.
+        if event.Type == "MODIFIED" && podIp != "" && podIp != myIp {
+            podUrl := getPodUrl(podIp)
+            if podReady {
+                // add IP to peer list
+                log.Printf("Pod now ready %s @ %s", podName, podUrl)
+                podSet[podUrl] = true
+            } else {
+                // remove IP from peer list
+                log.Printf("Pod no longer ready %s @ %s", podName, podUrl)
+                delete(podSet, podUrl)
+            }
+            podUrls := podSet.Keys()
+            log.Printf("New pod list = %v", podUrls)
+            pool.Set(podUrls...)
+        }
     }
+}
+
+func isPodReady(pod *v1.Pod) bool {
+    for _, condition := range pod.Status.Conditions {
+        if condition.Type == v1.PodReady && condition.Status == v1.ConditionTrue {
+            return true
+        }
+    }
+    return false
+}
+
+func getPodUrl(podIp string) string {
+    return fmt.Sprintf("http://%s:%d", podIp, Port)
+}
+
+func logRequest(handler http.Handler) http.Handler {
+    return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+        log.Printf("%s %s %s\n", r.RemoteAddr, r.Method, r.URL)
+        handler.ServeHTTP(w, r)
+    })
 }
 
 func main() {
     // TODO: refactor this peer awareness as a library, and setup this groupcache app as a sample app for how to use it.
     // API could be something like:
-    //    peerAwareness(filterFunc, updateFunc)
-    // where filterFunc(*v1.Pod) bool - defines how to filter pod events
+    //    peerAwareness(metav1.ListOptions{}, updateFunc)
     // where updateFunc(podIp string, pod *v1.Pod, status PeerStatus) error - will be called as a goroutine whenever there is a change to the peer list
     // where PeerStatus = Added or Removed
 
-    // Setup groupcache (will automatically inject handler into net/http)
-    me := fmt.Sprintf("0.0.0.0:%d", Port)
-
-    // TODO: kube api call to get initial list of peers.
-    pool := groupcache.NewHTTPPool("http://" + me)
-    pool.Set(me)
+    listOptions := metav1.ListOptions{LabelSelector: "app=peer-aware-groupcache"}
 
     // Setup Kube api connection, if within Kube cluster
     config, err := rest.InClusterConfig()
+    var pool *groupcache.HTTPPool
     if err == nil {
-        clientset, err := kubernetes.NewForConfig(config)
+        kubeClient, err := kubernetes.NewForConfig(config)
         if err != nil {
             log.Fatalf("Could not connect to Kubernetes API: %v", err)
         }
-        // Start monitoring for pod transitions
-        go MonitorPodState(clientset, pool)
+        myIp := os.Getenv("MY_POD_IP")
+        if myIp == "" {
+            log.Fatalf("Could not get self pod ip")
+        }
+        initialPods, err := GetInitialPods(kubeClient, listOptions, myIp)
+        if err != nil {
+            log.Fatalf("Could not get initial pod list: %v", err)
+        }
+        if len(initialPods) <= 0 {
+            log.Fatalf("No pods detected, not even self!")
+        }
+        podUrls := initialPods.Keys()
+        pool = groupcache.NewHTTPPool(podUrls[0])
+        pool.Set(podUrls...)
+        // Start monitoring for pod transitions, to keep pool up to date
+        go MonitorPodState(kubeClient, listOptions, pool, myIp, initialPods)
     } else {
         log.Printf("WARNING: unable to create InCluster config for Kubernetes API. Is this running within a Kube cluster??")
+        // Setup groupcache with just self as peer
+        url := fmt.Sprintf("http://0.0.0.0:%d", Port)
+        pool = groupcache.NewHTTPPool(url)
+        pool.Set(url)
     }
 
     // Setup http routes
     http.HandleFunc("/", Index)
     http.HandleFunc("/factors", Factors)
+    http.HandleFunc("/stats", Stats)
+    http.HandleFunc("/hotstats", HotStats)
 
     log.Printf("Listening on port %d...", Port)
-    if err := http.ListenAndServe(me, nil); err != nil {
+    if err := http.ListenAndServe(fmt.Sprintf("0.0.0.0:%d", Port), logRequest(http.DefaultServeMux)); err != nil {
         log.Fatalf("error in ListenAndServe: %s", err)
     }
 }
