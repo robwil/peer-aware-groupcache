@@ -11,6 +11,7 @@ import (
     "k8s.io/api/core/v1"
     "k8s.io/client-go/rest"
     "os"
+    "sort"
 )
 
 const Port = 5000
@@ -75,15 +76,8 @@ func Stats(w http.ResponseWriter, _ *http.Request) {
     fmt.Fprintln(w, "Gets:     ", stats.Gets)
     fmt.Fprintln(w, "Hits:     ", stats.Hits)
     fmt.Fprintln(w, "Evictions:", stats.Evictions)
-}
-
-func HotStats(w http.ResponseWriter, _ *http.Request) {
-    stats := PrimeFactorsGroup.CacheStats(groupcache.HotCache)
-    fmt.Fprintln(w, "Bytes:    ", stats.Bytes)
-    fmt.Fprintln(w, "Items:    ", stats.Items)
-    fmt.Fprintln(w, "Gets:     ", stats.Gets)
-    fmt.Fprintln(w, "Hits:     ", stats.Hits)
-    fmt.Fprintln(w, "Evictions:", stats.Evictions)
+    fmt.Fprintln(w, "Self URL: ", selfUrl)
+    fmt.Fprintf(w, "Current pod set: [%d] %v\n", len(podSet), podSet)
 }
 
 type PodSet map[string]bool
@@ -94,6 +88,7 @@ func (podSet PodSet) Keys() []string {
         keys[i] = key
         i++
     }
+    sort.Strings(keys)
     return keys
 }
 func (podSet PodSet) String() string {
@@ -122,7 +117,7 @@ func MonitorPodState(clientset *kubernetes.Clientset, listOptions metav1.ListOpt
     // set to true or false, we can keep track of all podUrls which are ready to receive connections. This stream of
     // events is used to maintain an always-updated list of peers for groupcache.
 
-    podSet := initialPods
+    podSet = initialPods
     log.Printf("Initial pod list = %v", podSet)
 
     // begin watch API call
@@ -152,17 +147,18 @@ func MonitorPodState(clientset *kubernetes.Clientset, listOptions metav1.ListOpt
             log.Printf("DELETED pod %s with ip %s. Ready = %v", podName, podIp, podReady)
         }
 
-        // TODO: detect if new set is diff than original set? to dedupe the logging.
         if event.Type == "MODIFIED" && podIp != "" && podIp != myIp {
             podUrl := getPodUrl(podIp)
-            if podReady {
+            if podReady && !podSet[podUrl] {
                 // add IP to peer list
-                log.Printf("Pod now ready %s @ %s", podName, podUrl)
+                log.Printf("Newly ready pod %s @ %s", podName, podUrl)
                 podSet[podUrl] = true
-            } else {
+            } else if !podReady && podSet[podUrl] {
                 // remove IP from peer list
-                log.Printf("Pod no longer ready %s @ %s", podName, podUrl)
+                log.Printf("Newly disappeared pod %s @ %s", podName, podUrl)
                 delete(podSet, podUrl)
+            } else {
+                continue // no change to pod list
             }
             podUrls := podSet.Keys()
             log.Printf("New pod list = %v", podUrls)
@@ -190,6 +186,9 @@ func logRequest(handler http.Handler) http.Handler {
         handler.ServeHTTP(w, r)
     })
 }
+
+var selfUrl string
+var podSet PodSet
 
 func main() {
     // TODO: refactor this peer awareness as a library, and setup this groupcache app as a sample app for how to use it.
@@ -220,7 +219,8 @@ func main() {
             log.Fatalf("No pods detected, not even self!")
         }
         podUrls := initialPods.Keys()
-        pool = groupcache.NewHTTPPool(podUrls[0])
+        selfUrl = getPodUrl(myIp)
+        pool = groupcache.NewHTTPPool(selfUrl)
         pool.Set(podUrls...)
         // Start monitoring for pod transitions, to keep pool up to date
         go MonitorPodState(kubeClient, listOptions, pool, myIp, initialPods)
@@ -236,7 +236,6 @@ func main() {
     http.HandleFunc("/", Index)
     http.HandleFunc("/factors", Factors)
     http.HandleFunc("/stats", Stats)
-    http.HandleFunc("/hotstats", HotStats)
 
     log.Printf("Listening on port %d...", Port)
     if err := http.ListenAndServe(fmt.Sprintf("0.0.0.0:%d", Port), logRequest(http.DefaultServeMux)); err != nil {
