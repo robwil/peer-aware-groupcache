@@ -19,6 +19,7 @@ limitations under the License.
 package singleflight
 
 import "sync"
+import "log"
 
 // call is an in-flight or completed Do call
 type call struct {
@@ -39,25 +40,35 @@ type Group struct {
 // time. If a duplicate comes in, the duplicate caller waits for the
 // original to complete and receives the same results.
 func (g *Group) Do(key string, fn func() (interface{}, error)) (interface{}, error) {
+	log.Printf("singleflight / Do :: try to acquire lock 1")
 	g.mu.Lock()
+	log.Printf("singleflight / Do :: got lock")
 	if g.m == nil {
 		g.m = make(map[string]*call)
 	}
 	if c, ok := g.m[key]; ok {
+		log.Printf("singleflight / Do :: release lock 1")
 		g.mu.Unlock()
+		log.Printf("singleflight / Do :: wait for waitgroup")
 		c.wg.Wait()
 		return c.val, c.err
 	}
 	c := new(call)
 	c.wg.Add(1)
 	g.m[key] = c
+	log.Printf("singleflight / Do :: release lock 2")
 	g.mu.Unlock()
 
+	log.Printf("singleflight / Do :: call fn()")
 	c.val, c.err = fn()
+	log.Printf("singleflight / Do :: mark wait done")
 	c.wg.Done()
 
+	log.Printf("singleflight / Do :: try to acquire lock 2")
 	g.mu.Lock()
+	log.Printf("singleflight / Do :: deleting key")
 	delete(g.m, key)
+	log.Printf("singleflight / Do :: release lock 3")
 	g.mu.Unlock()
 
 	return c.val, c.err

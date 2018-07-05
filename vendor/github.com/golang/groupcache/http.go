@@ -24,6 +24,7 @@ import (
 	"net/url"
 	"strings"
 	"sync"
+	"log"
 
 	"github.com/golang/groupcache/consistenthash"
 	pb "github.com/golang/groupcache/groupcachepb"
@@ -151,6 +152,8 @@ func (p *HTTPPool) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	groupName := parts[0]
 	key := parts[1]
 
+	log.Printf("groupcache http/ServeHTTP -- got request for %s and %s", groupName, key)
+
 	// Fetch the value for this group/key.
 	group := GetGroup(groupName)
 	if group == nil {
@@ -164,7 +167,9 @@ func (p *HTTPPool) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	group.Stats.ServerRequests.Add(1)
 	var value []byte
+	log.Printf("groupcache http/ServeHTTP -- about to call group.Get")
 	err := group.Get(ctx, key, AllocatingByteSliceSink(&value))
+	log.Printf("groupcache http/ServeHTTP -- done call group.Get")
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -196,6 +201,7 @@ func (h *httpGetter) Get(context Context, in *pb.GetRequest, out *pb.GetResponse
 		url.QueryEscape(in.GetGroup()),
 		url.QueryEscape(in.GetKey()),
 	)
+	log.Printf("groupcache http/GET -- GET %s", u)
 	req, err := http.NewRequest("GET", u, nil)
 	if err != nil {
 		return err
@@ -215,10 +221,12 @@ func (h *httpGetter) Get(context Context, in *pb.GetRequest, out *pb.GetResponse
 	b := bufferPool.Get().(*bytes.Buffer)
 	b.Reset()
 	defer bufferPool.Put(b)
+	log.Printf("groupcache http/GET -- reading response")
 	_, err = io.Copy(b, res.Body)
 	if err != nil {
 		return fmt.Errorf("reading response body: %v", err)
 	}
+	log.Printf("groupcache http/GET -- unmarshalling")
 	err = proto.Unmarshal(b.Bytes(), out)
 	if err != nil {
 		return fmt.Errorf("decoding response body: %v", err)

@@ -30,6 +30,7 @@ import (
 	"strconv"
 	"sync"
 	"sync/atomic"
+	"log"
 
 	pb "github.com/golang/groupcache/groupcachepb"
 	"github.com/golang/groupcache/lru"
@@ -205,15 +206,19 @@ func (g *Group) initPeers() {
 }
 
 func (g *Group) Get(ctx Context, key string, dest Sink) error {
+    log.Printf("groupcache/Get :: initializing peers")
 	g.peersOnce.Do(g.initPeers)
 	g.Stats.Gets.Add(1)
 	if dest == nil {
 		return errors.New("groupcache: nil dest Sink")
 	}
+    log.Printf("groupcache/Get :: about to lookup cache")
 	value, cacheHit := g.lookupCache(key)
+    log.Printf("groupcache/Get :: done lookup cache")
 
 	if cacheHit {
 		g.Stats.CacheHits.Add(1)
+        log.Printf("groupcache/Get :: about to setSinkView 1")
 		return setSinkView(dest, value)
 	}
 
@@ -222,13 +227,16 @@ func (g *Group) Get(ctx Context, key string, dest Sink) error {
 	// (if local) will set this; the losers will not. The common
 	// case will likely be one caller.
 	destPopulated := false
+    log.Printf("groupcache/Get :: populate dest")
 	value, destPopulated, err := g.load(ctx, key, dest)
+    log.Printf("groupcache/Get :: done populate dest")
 	if err != nil {
 		return err
 	}
 	if destPopulated {
 		return nil
 	}
+    log.Printf("groupcache/Get :: about to setSinkView 2")
 	return setSinkView(dest, value)
 }
 
@@ -264,7 +272,9 @@ func (g *Group) load(ctx Context, key string, dest Sink) (value ByteView, destPo
 		g.Stats.LoadsDeduped.Add(1)
 		var value ByteView
 		var err error
+		var ok error
 		if peer, ok := g.peers.PickPeer(key); ok {
+			log.Printf("Picked peer %v for key %s", peer, key)
 			value, err = g.getFromPeer(ctx, peer, key)
 			if err == nil {
 				g.Stats.PeerLoads.Add(1)
@@ -276,6 +286,7 @@ func (g *Group) load(ctx Context, key string, dest Sink) (value ByteView, destPo
 			// probably boring (normal task movement), so not
 			// worth logging I imagine.
 		}
+		log.Printf("groupcache / Load :: Getting key %s locally because not ok: %v", key, ok)
 		value, err = g.getLocally(ctx, key, dest)
 		if err != nil {
 			g.Stats.LocalLoadErrs.Add(1)
