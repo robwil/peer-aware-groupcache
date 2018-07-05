@@ -41,8 +41,7 @@ func getInitialPods(clientset *kubernetes.Clientset, listOptions metav1.ListOpti
 func monitorPodState(clientset *kubernetes.Clientset, listOptions metav1.ListOptions, myIp string, initialPods podSet, f NotifyFunc) {
     // When a kube pod is ADDED or DELETED, it goes through several changes which issue MODIFIED events.
     // By watching these MODIFIED events for times when we see a given podIp associated with a Pod READY condition
-    // set to true or false, we can keep track of all podUrls which are ready to receive connections. This stream of
-    // events is used to maintain an always-updated list of peers for groupcache.
+    // set to true or false, we can keep track of all pod ip addresses which are ready to receive connections.
 
     podSet := initialPods
     debugLogf("Initial pod list = %v", podSet)
